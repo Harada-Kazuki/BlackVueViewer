@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BlackVue ライブビューワー</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useRef, useEffect } = React;
+
+    // Lucide React アイコンの代替
+    const Video = () => (
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="m22 8-6 4 6 4V8Z"/>
+        <rect width="14" height="12" x="2" y="6" rx="2" ry="2"/>
+      </svg>
+    );
+
+    const AlertCircle = () => (
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <circle cx="12" cy="12" r="10"/>
+        <line x1="12" x2="12" y1="8" y2="12"/>
+        <line x1="12" x2="12.01" y1="16" y2="16"/>
+      </svg>
+    );
+
+    const BlackVueViewer = () => {
+      const [cameras, setCameras] = useState(() => {
+        const saved = localStorage.getItem('blackvue-cameras');
+        return saved ? JSON.parse(saved) : [
+          { psn: 'DR7LJPNJ100238', name: 'カメラ1', direction: 1 }
+        ];
+      });
+      
+      const [email, setEmail] = useState(() => {
+        return localStorage.getItem('blackvue-email') || 'kikai@kawaguchigumi.co.jp';
+      });
+      
+      const [userToken, setUserToken] = useState(() => {
+        return localStorage.getItem('blackvue-token') || 'HqjInQDj8ciQNF7CnRfbyQWTBP9V00FU';
+      });
+      
+      const [selectedCamera, setSelectedCamera] = useState(0);
+      const [error, setError] = useState('');
+      const [showSettings, setShowSettings] = useState(false);
+      
+      const videoRef = useRef(null);
+      const hlsRef = useRef(null);
+
+      // 設定を保存
+      useEffect(() => {
+        localStorage.setItem('blackvue-cameras', JSON.stringify(cameras));
+      }, [cameras]);
+
+      useEffect(() => {
+        localStorage.setItem('blackvue-email', email);
+      }, [email]);
+
+      useEffect(() => {
+        localStorage.setItem('blackvue-token', userToken);
+      }, [userToken]);
+
+      const getStreamUrl = (psn, direction) => {
+        return `https://cal2.blackvuecloud.com:11002/proc/hls_live.m3u8?email=${encodeURIComponent(email)}&user_token=${userToken}&tokenType=web&psn=${psn}&direction=${direction}`;
+      };
+
+      const toggleDirection = (index) => {
+        const newCameras = [...cameras];
+        newCameras[index].direction = newCameras[index].direction === 1 ? 2 : 1;
+        setCameras(newCameras);
+      };
+
+      const addCamera = () => {
+        const psn = prompt('カメラのシリアル番号 (PSN) を入力:');
+        if (psn) {
+          const name = prompt('カメラの名前を入力:', `カメラ${cameras.length + 1}`);
+          setCameras([...cameras, { psn, name: name || `カメラ${cameras.length + 1}`, direction: 1 }]);
+        }
+      };
+
+      const removeCamera = (index) => {
+        if (confirm('このカメラを削除しますか？')) {
+          const newCameras = cameras.filter((_, i) => i !== index);
+          setCameras(newCameras);
+          if (selectedCamera >= newCameras.length) {
+            setSelectedCamera(Math.max(0, newCameras.length - 1));
+          }
+        }
+      };
+
+      const bulkAddCameras = () => {
+        const text = prompt('カメラ情報を入力してください（1行につき: PSN,名前）:\n例:\nDR7LJPNJ100238,営業車1号\nDR7LJPNJ100239,トラック2号');
+        if (text) {
+          const lines = text.trim().split('\n');
+          const newCameras = [];
+          lines.forEach(line => {
+            const [psn, name] = line.split(',').map(s => s.trim());
+            if (psn) {
+              newCameras.push({ 
+                psn, 
+                name: name || `カメラ${cameras.length + newCameras.length + 1}`, 
+                direction: 1 
+              });
+            }
+          });
+          if (newCameras.length > 0) {
+            setCameras([...cameras, ...newCameras]);
+            alert(`${newCameras.length}台のカメラを追加しました`);
+          }
+        }
+      };
+
+      useEffect(() => {
+        if (videoRef.current && cameras.length > 0) {
+          const video = videoRef.current;
+          
+          // 既存のHLSインスタンスを破棄
+          if (hlsRef.current) {
+            hlsRef.current.destroy();
+          }
+          
+          if (Hls.isSupported()) {
+            const hls = new Hls({
+              enableWorker: true,
+              lowLatencyMode: true,
+              backBufferLength: 90
+            });
+            
+            hlsRef.current = hls;
+            
+            const streamUrl = getStreamUrl(
+              cameras[selectedCamera].psn,
+              cameras[selectedCamera].direction
+            );
+            
+            hls.loadSource(streamUrl);
+            hls.attachMedia(video);
+            
+            hls.on(Hls.Events.MANIFEST_PARSED, () => {
+              video.play().catch(err => {
+                console.error('再生エラー:', err);
+                setError('映像の再生に失敗しました');
+              });
+            });
+            
+            hls.on(Hls.Events.ERROR, (event, data) => {
+              if (data.fatal) {
+                console.error('HLS エラー:', data);
+                setError(`接続エラー: ${data.type}`);
+              }
+            });
+          } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            const streamUrl = getStreamUrl(
+              cameras[selectedCamera].psn,
+              cameras[selectedCamera].direction
+            );
+            video.src = streamUrl;
+            video.addEventListener('loadedmetadata', () => {
+              video.play();
+            });
+          } else {
+            setError('このブラウザはHLS再生に対応していません');
+          }
+        }
+        
+        return () => {
+          if (hlsRef.current) {
+            hlsRef.current.destroy();
+            hlsRef.current = null;
+          }
+        };
+      }, [selectedCamera, cameras, email, userToken]);
+
+      return (
+        <div className="min-h-screen bg-gray-900 text-white p-4">
+          <div className="max-w-7xl mx-auto">
+            {/* ヘッダー */}
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Video />
+                <h1 className="text-2xl font-bold">BlackVue ライブビューワー</h1>
+              </div>
+              <button
+                onClick={() => setShowSettings(!showSettings)}
+                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded"
+              >
+                設定
+              </button>
+            </div>
+
+            {/* 設定パネル */}
+            {showSettings && (
+              <div className="bg-gray-800 p-4 rounded-lg mb-4">
+                <h2 className="text-lg font-bold mb-3">接続設定</h2>
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-sm mb-1">メールアドレス:</label>
+                    <input
+                      type="text"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      className="w-full px-3 py-2 bg-gray-700 rounded text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm mb-1">User Token:</label>
+                    <input
+                      type="text"
+                      value={userToken}
+                      onChange={(e) => setUserToken(e.target.value)}
+                      className="w-full px-3 py-2 bg-gray-700 rounded font-mono text-sm text-white"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* エラー表示 */}
+            {error && (
+              <div className="bg-red-900/50 border border-red-500 p-3 rounded-lg mb-4 flex items-center gap-2">
+                <AlertCircle />
+                <span>{error}</span>
+                <button
+                  onClick={() => setError('')}
+                  className="ml-auto text-sm underline"
+                >
+                  閉じる
+                </button>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+              {/* カメラリスト */}
+              <div className="lg:col-span-1 bg-gray-800 rounded-lg p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="font-bold">カメラリスト ({cameras.length}台)</h2>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={addCamera}
+                      className="px-3 py-1 bg-blue-600 hover:bg-blue-500 rounded text-sm"
+                      title="1台追加"
+                    >
+                      + 1台
+                    </button>
+                    <button
+                      onClick={bulkAddCameras}
+                      className="px-3 py-1 bg-green-600 hover:bg-green-500 rounded text-sm"
+                      title="まとめて追加"
+                    >
+                      一括
+                    </button>
+                  </div>
+                </div>
+                <div className="space-y-2 max-h-[calc(100vh-200px)] overflow-y-auto">
+                  {cameras.map((camera, index) => (
+                    <div
+                      key={index}
+                      className={`p-3 rounded cursor-pointer transition ${
+                        selectedCamera === index
+                          ? 'bg-blue-600'
+                          : 'bg-gray-700 hover:bg-gray-600'
+                      }`}
+                      onClick={() => setSelectedCamera(index)}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex-1">
+                          <div className="font-medium">{camera.name}</div>
+                          <div className="text-xs text-gray-400 font-mono">{camera.psn}</div>
+                          <div className="text-xs mt-1">
+                            {camera.direction === 1 ? '🎥 フロント' : '🎥 リア'}
+                          </div>
+                        </div>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            removeCamera(index);
+                          }}
+                          className="text-red-400 hover:text-red-300 text-sm px-2"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* 映像表示 */}
+              <div className="lg:col-span-3 bg-gray-800 rounded-lg p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <div>
+                    <h2 className="font-bold text-lg">{cameras[selectedCamera]?.name}</h2>
+                    <p className="text-sm text-gray-400">{cameras[selectedCamera]?.psn}</p>
+                  </div>
+                  <button
+                    onClick={() => toggleDirection(selectedCamera)}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded"
+                  >
+                    {cameras[selectedCamera]?.direction === 1 ? 'リアに切替' : 'フロントに切替'}
+                  </button>
+                </div>
+                
+                <div className="relative bg-black rounded-lg overflow-hidden aspect-video">
+                  <video
+                    ref={videoRef}
+                    className="w-full h-full"
+                    controls
+                    muted
+                    playsInline
+                  />
+                </div>
+                
+                <div className="mt-3 text-xs text-gray-400 break-all">
+                  <p>ストリームURL: {cameras[selectedCamera] && getStreamUrl(cameras[selectedCamera].psn, cameras[selectedCamera].direction)}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    ReactDOM.render(<BlackVueViewer />, document.getElementById('root'));
+  </script>
+</body>
+</html>
